@@ -38,7 +38,7 @@ public class CustomerSupportController {
         return reply(request.sessionId(), request.message());
     }
 
-    MessageReply reply(String sessionId, String message) {
+    public MessageReply reply(String sessionId, String message) {
         String actualSessionId = sessionId == null || sessionId.isBlank()
                 ? UUID.randomUUID().toString() : sessionId;
         Result<String> result = agent.answer(actualSessionId, message);
@@ -51,3 +51,4 @@ public class CustomerSupportController {
                 executions.stream().map(execution -> execution.request().name()).toList(), sources);
     }
 }
+
