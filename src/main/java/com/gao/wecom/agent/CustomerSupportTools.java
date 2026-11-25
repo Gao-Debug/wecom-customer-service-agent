@@ -30,6 +30,6 @@ public class CustomerSupportTools {
 
     @Tool("将当前会话转交人工客服。当用户明确要求人工，或证据不足无法安全回答时使用。")
     public String handoffToHuman(String reason) {
-        return "已提交人工客服接管请求，原因：" + reason;
+        return "模拟转人工，尚未通知任何客服。待人工复核的原因：" + reason;
     }
 }

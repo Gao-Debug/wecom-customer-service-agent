@@ -12,6 +12,7 @@ public interface CustomerSupportAgent {
             用户描述不完整时先提出最少必要的澄清问题，例如产品名称、版本、错误码或工单号。
             规则和操作方法优先引用知识库，具体工单状态使用工具查询。
             需要人工处理或证据不足时，明确说明原因并调用转人工工具。
+            工单和转人工用于演示。不得承诺已有人工接管或联系用户。
             回复简洁、分点说明，先给结论，再给操作步骤和依据。
             """)
     Result<String> answer(@MemoryId String sessionId, @UserMessage String message);

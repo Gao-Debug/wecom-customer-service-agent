@@ -1,33 +1,41 @@
 package com.gao.wecom.wecom;
 
-import com.gao.wecom.agent.CustomerSupportController;
-import com.gao.wecom.agent.CustomerSupportController.MessageReply;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 import org.w3c.dom.Document;
-import org.w3c.dom.NodeList;
 
 import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
+import java.util.HexFormat;
+import java.util.concurrent.RejectedExecutionException;
 
 @RestController
-@RequestMapping("/api/wecom/callback")
+@RequestMapping(value = "/api/wecom/callback", produces = "text/plain;charset=UTF-8")
+@ConditionalOnProperty(name = "wecom.enabled", havingValue = "true")
 public class WecomCallbackController {
-    private static final Logger log = LoggerFactory.getLogger(WecomCallbackController.class);
-    private final CustomerSupportController support;
+    private final WecomCustomerService support;
     private final String token;
     private final WecomCrypto crypto;
 
-    public WecomCallbackController(CustomerSupportController support,
+    public WecomCallbackController(WecomCustomerService support,
                                    @Value("${wecom.callback-token}") String token,
-                                   @Value("${wecom.encoding-aes-key:}") String aesKey,
-                                   @Value("${wecom.corp-id:}") String corpId) {
+                                   @Value("${wecom.encoding-aes-key}") String aesKey,
+                                   @Value("${wecom.corp-id}") String corpId) {
+        if (token.isBlank() || "change-me".equals(token) || !aesKey.matches("[a-zA-Z0-9+/]{43}")) {
+            throw new IllegalArgumentException("启用微信客服前请配置回调 Token 和 43 位 EncodingAESKey");
+        }
         this.support = support;
         this.token = token;
         this.crypto = new WecomCrypto(aesKey, corpId);
@@ -38,94 +46,57 @@ public class WecomCallbackController {
                          @RequestParam String timestamp,
                          @RequestParam String nonce,
                          @RequestParam String echostr) {
-        if (!validSignature(signature, timestamp, nonce, echostr)) {
-            throw new IllegalArgumentException("企业微信回调签名校验失败");
-        }
-        return crypto.enabled() ? crypto.decrypt(echostr) : echostr;
+        return verifyAndDecrypt(signature, timestamp, nonce, echostr);
     }
 
-    @PostMapping(consumes = MediaType.APPLICATION_XML_VALUE, produces = MediaType.APPLICATION_XML_VALUE)
-    public String receive(@RequestParam(value = "msg_signature", required = false) String signature,
-                           @RequestParam(value = "timestamp", required = false) String timestamp,
-                           @RequestParam(value = "nonce", required = false) String nonce,
-                           @RequestBody String body) {
+    @PostMapping
+    public String receive(@RequestParam("msg_signature") String signature,
+                          @RequestParam String timestamp,
+                          @RequestParam String nonce,
+                          @RequestBody String body) {
         String encrypted = text(parse(body), "Encrypt");
-        String plain = encrypted.isBlank() ? body : decryptAndVerify(signature, timestamp, nonce, encrypted);
-        IncomingMessage message = parseMessage(plain);
-        if (!"text".equalsIgnoreCase(message.type()) || message.content().isBlank()) return "success";
-        String sessionId = message.userId().isBlank() ? message.messageId() : message.userId();
-        MessageReply reply = support.reply(sessionId, message.content());
-        log.info("企业微信客服消息已处理，userId={}, tools={}", message.userId(), reply.tools());
-        String response = textReply(message.userId(), reply.answer());
-        if (!crypto.enabled()) return response;
-        String encryptedReply = crypto.encrypt(response);
-        String time = String.valueOf(System.currentTimeMillis() / 1000);
-        return "<xml><Encrypt><![CDATA[" + encryptedReply + "]]></Encrypt><MsgSignature><![CDATA["
-                + signature(time, nonce, encryptedReply) + "]]></MsgSignature><TimeStamp>" + time
-                + "</TimeStamp><Nonce><![CDATA[" + cdata(nonce) + "]]></Nonce></xml>";
-    }
-
-    private String decryptAndVerify(String signature, String timestamp, String nonce, String encrypted) {
-        if (signature == null || timestamp == null || nonce == null
-                || !validSignature(signature, timestamp, nonce, encrypted)) {
-            throw new IllegalArgumentException("企业微信消息签名校验失败");
+        Document event = parse(verifyAndDecrypt(signature, timestamp, nonce, encrypted));
+        if ("kf_msg_or_event".equals(text(event, "Event"))) {
+            try {
+                support.onNotification(text(event, "OpenKfId"), text(event, "Token"));
+            } catch (RejectedExecutionException ex) {
+                throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE);
+            }
         }
-        return crypto.decrypt(encrypted);
+        return "success";
     }
 
-    private boolean validSignature(String supplied, String timestamp, String nonce, String encrypted) {
-        return MessageDigest.isEqual(signature(timestamp, nonce, encrypted)
-                .getBytes(StandardCharsets.UTF_8), supplied.getBytes(StandardCharsets.UTF_8));
-    }
-
-    private String signature(String timestamp, String nonce, String encrypted) {
+    private String verifyAndDecrypt(String signature, String timestamp, String nonce, String encrypted) {
+        String[] values = {token, timestamp, nonce, encrypted};
+        Arrays.sort(values);
         try {
-            String[] values = {token, timestamp, nonce, encrypted};
-            Arrays.sort(values);
             byte[] digest = MessageDigest.getInstance("SHA-1")
                     .digest(String.join("", values).getBytes(StandardCharsets.UTF_8));
-            StringBuilder output = new StringBuilder();
-            for (byte item : digest) output.append(String.format("%02x", item));
-            return output.toString();
-        } catch (Exception exception) {
-            throw new IllegalStateException("无法计算企业微信签名", exception);
+            byte[] expected = HexFormat.of().formatHex(digest).getBytes(StandardCharsets.US_ASCII);
+            if (encrypted.isBlank() || !MessageDigest.isEqual(expected, signature.getBytes(StandardCharsets.US_ASCII))) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+            }
+            return crypto.decrypt(encrypted);
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException(ex);
+        } catch (IllegalArgumentException ex) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
         }
-    }
-
-    private static IncomingMessage parseMessage(String xml) {
-        Document document = parse(xml);
-        return new IncomingMessage(text(document, "FromUserName"), text(document, "MsgType"),
-                text(document, "Content"), text(document, "MsgId"));
     }
 
     private static Document parse(String xml) {
+        if (xml.length() > 65536) throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE);
         try {
             var factory = DocumentBuilderFactory.newInstance();
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-            factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
-            factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-            return factory.newDocumentBuilder().parse(
-                    new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception exception) {
-            throw new IllegalArgumentException("企业微信消息 XML 无法解析", exception);
+            return factory.newDocumentBuilder().parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception ex) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
         }
     }
 
     private static String text(Document document, String tag) {
-        NodeList nodes = document.getElementsByTagName(tag);
+        var nodes = document.getDocumentElement().getElementsByTagName(tag);
         return nodes.getLength() == 0 ? "" : nodes.item(0).getTextContent();
-    }
-
-    private record IncomingMessage(String userId, String type, String content, String messageId) {}
-
-    private static String textReply(String userId, String answer) {
-        return "<xml><ToUserName><![CDATA[" + cdata(userId) + "]]></ToUserName>"
-                + "<FromUserName><![CDATA[agent]]></FromUserName><CreateTime>"
-                + (System.currentTimeMillis() / 1000) + "</CreateTime><MsgType><![CDATA[text]]></MsgType>"
-                + "<Content><![CDATA[" + cdata(answer) + "]]></Content></xml>";
-    }
-
-    private static String cdata(String value) {
-        return value == null ? "" : value.replace("]]>", "]]]]><![CDATA[>");
     }
 }

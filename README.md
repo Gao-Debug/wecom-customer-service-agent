@@ -1,14 +1,14 @@
 # 企业微信客服 Agent
 
-这是一个独立的企业微信微信客服 Agent。个人微信用户通过企业微信微信客服入口发起咨询，后端使用 Spring Boot 和 LangChain4j 完成知识库检索、会话记忆、工单工具调用和人工转接。
+这是一个独立的企业微信客服 Agent。项目使用 Spring Boot 和 LangChain4j，提供产品知识库问答、会话记忆和演示工单。企业微信入口采用「微信客服」API。
 
 ## 当前能力
 
 - 企业产品知识库 RAG 问答
 - 多轮会话和澄清提问
 - 创建、查询客服工单
-- 无法确认时转人工
-- 企业微信回调校验和 XML 消息处理
+- 模拟转人工，工单保存在进程内存
+- 微信客服回调验签、解密、异步拉取消息和发送文本回复
 - 本地 API 联调，不依赖前端页面
 
 ## 启动
@@ -41,11 +41,16 @@ https://你的域名/api/wecom/callback
 环境变量：
 
 - `WECOM_CORP_ID`
+- `WECOM_ENABLED=true`
 - `WECOM_CALLBACK_TOKEN`
 - `WECOM_ENCODING_AES_KEY`
+- `WECOM_KF_SECRET`，微信客服 Secret
+- `WECOM_OPEN_KFID`，独立测试客服账号 ID
 - `DASHSCOPE_API_KEY`
 
-当前代码保留了明文回调联调入口。接入正式环境前，需要在回调控制器中接入企业微信官方 AES 加解密流程，并使用 HTTPS 公网地址。
+公网反向代理只转发 `/api/wecom/callback`。回调接收 `kf_msg_or_event` 并快速确认，后台调用 `kf/sync_msg` 拉取配置的测试客服账号消息，再用 `kf/send_msg` 发送文本回复。重启会清空进程内的游标、会话和工单。
+
+手机联调时，从企微后台取得测试客服链接，用个人微信打开，发送「导入失败应该怎么排查？」。等待手机收到知识库答复。真实企微平台联调待完成。
 
 ## 面试演示
 
