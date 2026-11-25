@@ -2,12 +2,12 @@ package com.gao.wecom.agent;
 
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.document.splitter.DocumentSplitters;
-import dev.langchain4j.data.segment.TextSegment;`r`nimport dev.langchain4j.model.input.PromptTemplate;
+import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.model.input.PromptTemplate;
 import dev.langchain4j.rag.DefaultRetrievalAugmentor;
 import dev.langchain4j.rag.content.injector.DefaultContentInjector;
 import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
-import dev.langchain4j.rag.query.Query;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 import dev.langchain4j.store.embedding.EmbeddingStoreIngestor;
 import org.springframework.context.annotation.Bean;
@@ -39,7 +39,7 @@ public class CustomerSupportRagConfiguration {
                 .maxResults(4)
                 .build();
         var injector = new DefaultContentInjector(
-                "用户问题：\\n{{userMessage}}\\n\\n知识库资料：\\n{{contents}}\\n\\n只依据资料回答。",
+                PromptTemplate.from("用户问题：\n{{userMessage}}\n\n知识库资料：\n{{contents}}\n\n只依据资料回答。"),
                 List.of());
         return DefaultRetrievalAugmentor.builder()
                 .queryTransformer(query -> List.of(query))
@@ -48,4 +48,3 @@ public class CustomerSupportRagConfiguration {
                 .build();
     }
 }
-
